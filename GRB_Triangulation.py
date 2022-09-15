@@ -54,7 +54,7 @@ class Integral:
 
         self.binsize = float(pd.read_csv(self.filename, delim_whitespace=True, header = None, nrows=2).iloc[1][1])
         self.times = np.array(self.lightcurve["time"]) + self.secondOfDay #absolute time in seconds of the day
-        self.error = np.sqrt(np.array(self.lightcurve["rate"])) #rate error -> poisson process
+        self.cnts_error = np.array(self.lightcurve["rate"])*0.05 
         self.position = self.getPosition() #integral position at triggertime from tle
 
     def getLightcurve(self):
@@ -132,7 +132,7 @@ class Fermi:
         
         
         self.times = np.array(self.lightcurve["time"]) + self.secondOfDay
-        self.error = np.sqrt(np.array(self.lightcurve["rate"]))
+        self.cnts_error = np.array(self.lightcurve["rate"])*0.064
         self.position = self.getPosition() #position at triggertime form fermi trigdat data
     
 
@@ -213,10 +213,10 @@ def triangulate(integral, fermi, nSigma=1, fit=True, fit_range=(-2,3)):
 
 
     #create data needed for pyipn.correlation.correlate function
-    bgsub1 = np.array(integral.BGsubLightcurve["rate"])
-    bgsub2 = np.array(fermi.BGsubLightcurve["rate"])
+    bgsubcnts1 = np.array(integral.BGsubLightcurve["rate"])*0.05
+    bgsubcnts2 = np.array(fermi.BGsubLightcurve["rate"])*0.064
     
-    assert len(bgsub1) > 2000, "Integral SPI-ACS data incomplete."
+    assert len(bgsubcnts1) > 2000, "Integral SPI-ACS data incomplete."
     
     #use Integral data from -5s to 50s relative to triggertime
     i_beg_1 = 0
@@ -224,7 +224,7 @@ def triangulate(integral, fermi, nSigma=1, fit=True, fit_range=(-2,3)):
     
     #start and end index of Fermi lightcurve to be used 
     i_beg_2 = 0
-    i_end_2 = len(bgsub2)-1
+    i_end_2 = len(bgsubcnts2)-1
     if fermi.minRes == 1.024:
         i_beg_2 = np.argwhere(np.array(fermi.BGsubLightcurve["time"]) > -2 + integral.secondOfDay - fermi.secondOfDay).flatten()[0] #lc2 start at -2 s -> lc2 must not start before lc1
         if fermi.GRB_end < 40:
@@ -232,14 +232,14 @@ def triangulate(integral, fermi, nSigma=1, fit=True, fit_range=(-2,3)):
         else:
             i_end_2 = np.argwhere(np.array(fermi.BGsubLightcurve["time"]) < 40).flatten()[-1]
 
-    i1, i2 = get_max_sn((i_end_2-i_beg_2)*0.064, bgsub1*0.05) #indices of lc1 corresponding to i_beg_1 and i_beg_2 for calculating fscale
+    i1, i2 = get_max_sn((i_end_2-i_beg_2)*0.064, bgsubcnts1) #indices of lc1 corresponding to i_beg_1 and i_beg_2 for calculating fscale
     
-    fscale = (np.sum(bgsub1[i1:i2+1]*0.05))/(np.sum(bgsub2[i_beg_2:i_end_2+1]*0.064))
+    fscale = (np.sum(bgsubcnts1[i1:i2+1]))/(np.sum(bgsubcnts2[i_beg_2:i_end_2+1]))
     
     #fscale = max(bgsub1)/max(bgsub2)
     assert fscale > 0, "fscale must be positive."
 
-    arr_dt, arr_chi, nDOF, fRijMin, dTmin, iMin, nMin = correlate(integral.times, bgsub1, integral.error, fermi.times, bgsub2, fermi.error,
+    arr_dt, arr_chi, nDOF, fRijMin, dTmin, iMin, nMin = correlate(integral.times, bgsubcnts1, integral.cnts_error, fermi.times, bgsubcnts2, fermi.cnts_error,
     i_beg_2, i_end_2, i_beg_1, n_max_1, fscale, integral.binsize*1000, 64)
     
     #search for minimum of correlation function in plausible interval
