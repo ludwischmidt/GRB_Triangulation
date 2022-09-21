@@ -278,13 +278,7 @@ def triangulate(integral, fermi, nSigma=1, fit=True, fit_range=(-2,3)):
     nMin = np.argmin(abs(arr_dt - dt/u.s))
 
     #compute errors
-    dTupper, dTlower = timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin)
-    
-    #handle: timelag error outside plausible interval
-    if dTupper > maxTimelag:
-        dTupper = maxTimelag
-    if dTlower < -maxTimelag:
-        dTlower = -maxTimelag
+    dTupper_cons, dTlower_cons, dTupper_interp, dTlower_interp, fsigma = timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin, maxTimelag)
 
     
     skw_dict = create_skw_dict("astro degrees mollweide", None, None)
@@ -296,23 +290,28 @@ def triangulate(integral, fermi, nSigma=1, fit=True, fit_range=(-2,3)):
     #triangulation circle
     compute_annulus_from_time_delay(dt, distance/const.c, d1, d2, ax = annulus_ax, color = "black")
     
-    #errors
-    compute_annulus_from_time_delay(dTupper*u.s, dTlower*u.s, d1, d2, ax= annulus_ax)
+    #conservative error
+    compute_annulus_from_time_delay(dTupper_cons*u.s, dTlower_cons*u.s, d1, d2, ax = annulus_ax)
 
-    plt.grid()
+    #interpolated error
+    compute_annulus_from_time_delay(dTupper_interp*u.s, dTlower_interp*u.s, d1, d2, ax = annulus_ax, linestyle = "dashed")
+
+    annulus_ax.set_title(f"Triangulation annulus with {nSigma}\u03C3-errors \n (dashed errors from linear interpolation)")
+    annulus_ax.grid()
+    annulus_ax.legend()
 
     
     #distinguish cases so that 0°<theta<90°
     if dt > 0:
         distance, norm_d, ra, dec = calculate_distance_and_norm(d2,d1)
-        return crosscor_fig, annulus_fig, ra.degree, dec.degree, theta_from_time_delay(dt, distance)*180/np.pi, theta_from_time_delay(dTupper*u.s, distance)*180/np.pi, theta_from_time_delay(dTlower*u.s, distance)*180/np.pi
+        return crosscor_fig, annulus_fig, ra.degree, dec.degree, theta_from_time_delay(dt, distance)*180/np.pi, theta_from_time_delay(dTlower_cons*u.s, distance)*180/np.pi, theta_from_time_delay(dTupper_cons*u.s, distance)*180/np.pi, theta_from_time_delay(dTlower_interp*u.s, distance)*180/np.pi, theta_from_time_delay(dTupper_interp*u.s, distance)*180/np.pi
     
     if dt < 0:
         distance, norm_d, ra, dec = calculate_distance_and_norm(d1,d2)
-        return crosscor_fig, annulus_fig, ra.degree, dec.degree, theta_from_time_delay(-dt, distance)*180/np.pi, theta_from_time_delay(-dTupper*u.s, distance)*180/np.pi, theta_from_time_delay(-dTlower*u.s, distance)*180/np.pi
+        return crosscor_fig, annulus_fig, ra.degree, dec.degree, theta_from_time_delay(-dt, distance)*180/np.pi, theta_from_time_delay(-dTupper_cons*u.s, distance)*180/np.pi, theta_from_time_delay(-dTlower_cons*u.s, distance)*180/np.pi, theta_from_time_delay(-dTupper_interp*u.s, distance)*180/np.pi, theta_from_time_delay(-dTlower_interp*u.s, distance)*180/np.pi
 
 
-def timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin):
+def timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin, maxTimelag):
     """
     From pyipn.correlation.Correlator._get_dTcc
     Computes confidence interval of determined timelag.
@@ -325,7 +324,6 @@ def timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin):
     P0 = norm.cdf(nSigma) - norm.cdf(-nSigma)
     fSigma = chi2.ppf(P0, nDOF - 1) / (nDOF - 1) - 1.0 + arr_chi[nMin]
     #fSigmaSimple = arr_chi[nMin] + nSigma ** 2 /nDOF
-
     n = arr_chi.size
 
     # search upper dTcc 3 sigma
@@ -336,7 +334,15 @@ def timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin):
         i = i - 1
         fRij = arr_chi[i]
 
-    dTupper = arr_dt[i]
+    #conservative error: first data point after exceeding fsigma
+    dTupper_cons = arr_dt[i]
+
+    #arr_dt[i+1] < fsigma < arr_dt[i] -> interpolate by straight and find intersection with y = fsigma (interpolated error)
+    if dTupper_cons < maxTimelag:
+        dTupper_interp = (arr_dt[i] - arr_dt[i+1])*(fSigma - arr_chi[i])/(arr_chi[i] - arr_chi[i+1]) + arr_dt[i]
+    else:
+        dTupper_cons = maxTimelag
+        dTupper_interp = maxTimelag
 
     # search lower dTcc 3 sigma
     i = nMin
@@ -345,9 +351,15 @@ def timelag_error(nSigma, nDOF, arr_chi, arr_dt, nMin):
         i = i + 1
         fRij = arr_chi[i]
 
-    dTlower = arr_dt[i]
+    dTlower_cons = arr_dt[i]
     
-    return dTupper,dTlower
+    if dTlower_cons > - maxTimelag:
+        dTlower_interp = (arr_dt[i-1] - arr_dt[i])*(fSigma - arr_chi[i])/(arr_chi[i-1] - arr_chi[i]) + arr_dt[i]
+    else:
+        dTlower_cons = - maxTimelag
+        dTlower_interp = - maxTimelag
+        
+    return dTupper_cons, dTlower_cons, dTupper_interp, dTlower_interp, fSigma
 
 
 def get_max_sn(dt_s, BGsubCounts):
@@ -412,10 +424,11 @@ def autoTriangulate(acs_file, trigdat_file, bkg_neg_stop, bkg_pos_start, trigger
     
 
     #triangulate
-    crosscor_fig, annulus_fig, ra, dec, theta, dthetaUpper, dthetaLower = triangulate(integral, fermi)
+    crosscor_fig, annulus_fig, ra, dec, theta, dthetaUpper_cons, dthetaLower_cons, dthetaUpper_interp, dthetaLower_interp = triangulate(integral, fermi)
     
     #create lightcurve plot
     lightcurve_fig, lightcurve_ax = plt.subplots()
+    lightcurve_ax.set_title("Lightcurves with trigger time (dashed)")
     lightcurve_ax.plot(integral.times - fermi.secondOfDay, integral.BGsubLightcurve["rate"], label = "Integral SPI-ACS")
     lightcurve_ax.plot(fermi.BGsubLightcurve["time"], fermi.BGsubLightcurve["rate"], label = "Fermi Trigdat")
     lightcurve_ax.set_xlabel(f"Time relative to Fermi trigger at {time[0]}:{time[1]}:{time[2][:5]} on {date[6:8]}/{date[4:6]}/{date[0:4]} (s)")
@@ -426,4 +439,4 @@ def autoTriangulate(acs_file, trigdat_file, bkg_neg_stop, bkg_pos_start, trigger
     lightcurve_ax.axvline(integral.secondOfDay - fermi.secondOfDay, color = "#1f77b4", linestyle = "dashed", linewidth = 1)
     lightcurve_ax.axvline(0, color = "#ff7f0e", linestyle = "dashed", linewidth = 1)
     
-    return lightcurve_fig, crosscor_fig, annulus_fig, ra, dec, theta, dthetaUpper, dthetaLower
+    return lightcurve_fig, crosscor_fig, annulus_fig, ra, dec, theta, dthetaUpper_cons, dthetaLower_cons, dthetaUpper_interp, dthetaLower_interp
